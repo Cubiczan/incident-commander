@@ -27,7 +27,7 @@ const okReport: ProtocolHealthReport = {
   healthy: true,
   reason_code: null,
   reason: null,
-  model_id: 'anthropic.claude-sonnet-4-20250514-v1:0',
+  model_id: 'us.amazon.nova-pro-v1:0',
   checked_at: '2026-09-20T00:00:00.000Z',
   latency_ms: 12,
   schema_fingerprint: 'abc123',

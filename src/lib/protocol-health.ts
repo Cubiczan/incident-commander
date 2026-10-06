@@ -13,17 +13,19 @@ import {
   InvokeModelCommand,
 } from '@aws-sdk/client-bedrock-runtime';
 import { createHash } from 'crypto';
-import { classifyBedrockError, MODEL_ID, type BedrockFailureReason } from './bedrock';
+import {
+  awsClientOptions,
+  awsCredentialsConfigured,
+  buildNovaInvokeBody,
+  classifyBedrockError,
+  interpretNovaProbeBody,
+  modelId,
+  type BedrockFailureReason,
+} from './bedrock';
 
 // The probe owns its own client (same env config as the invocation path) so
 // it stays independently constructible in tests and health endpoints.
-const client = new BedrockRuntimeClient({
-  region: process.env.AWS_REGION || 'us-east-1',
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
-  },
-});
+const client = new BedrockRuntimeClient(awsClientOptions());
 
 export interface ProtocolHealthReport {
   protocol: 'bedrock-invoke';
@@ -44,7 +46,7 @@ export interface ProtocolHealthReport {
 }
 
 const REASON_HINTS: Record<BedrockFailureReason, string> = {
-  CREDENTIALS_MISSING: 'AWS credentials are not configured (AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY).',
+  CREDENTIALS_MISSING: 'AWS credentials are not configured. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in the host environment, or set AWS_USE_IAM_ROLE=1 to use an IAM role.',
   AUTH_DENIED: 'AWS denied the call — check IAM permissions for bedrock:InvokeModel.',
   THROTTLED: 'Bedrock throttled the request — the account or model quota is exhausted.',
   MODEL_NOT_FOUND: 'The configured BEDROCK_MODEL_ID is not available in this region/account.',
@@ -57,13 +59,13 @@ export async function probeBedrockProtocol(): Promise<ProtocolHealthReport> {
   const start = Date.now();
 
   // No credentials: fail fast without a pointless network round-trip.
-  if (!process.env.AWS_ACCESS_KEY_ID && !process.env.AWS_SECRET_ACCESS_KEY) {
+  if (!awsCredentialsConfigured()) {
     return {
       protocol: 'bedrock-invoke',
       healthy: false,
       reason_code: 'CREDENTIALS_MISSING',
       reason: REASON_HINTS.CREDENTIALS_MISSING,
-      model_id: MODEL_ID,
+      model_id: modelId(),
       checked_at: checkedAt,
       latency_ms: 0,
       schema_fingerprint: null,
@@ -72,29 +74,25 @@ export async function probeBedrockProtocol(): Promise<ProtocolHealthReport> {
 
   try {
     const command = new InvokeModelCommand({
-      modelId: MODEL_ID,
+      modelId: modelId(),
       contentType: 'application/json',
       accept: 'application/json',
       // Minimal handshake: 1 token, single word. Enough to prove the
       // protocol path (auth, model, response shape) end to end.
-      body: JSON.stringify({
-        anthropic_version: 'bedrock-2023-05-31',
-        max_tokens: 1,
-        messages: [{ role: 'user', content: 'ping' }],
-      }),
+      body: JSON.stringify(buildNovaInvokeBody(undefined, [{ role: 'user', content: 'ping' }], 1)),
     });
     const response = await client.send(command);
     const responseBody = JSON.parse(new TextDecoder().decode(response.body)) as Record<string, unknown>;
     const fingerprint = createHash('sha256')
       .update(JSON.stringify(Object.keys(responseBody).sort()))
       .digest('hex');
-    const healthy = Array.isArray(responseBody.content);
+    const interpreted = interpretNovaProbeBody(responseBody);
     return {
       protocol: 'bedrock-invoke',
-      healthy,
-      reason_code: healthy ? null : 'UNKNOWN',
-      reason: healthy ? null : 'Response received but the expected content array is missing — schema drift.',
-      model_id: MODEL_ID,
+      healthy: interpreted.healthy,
+      reason_code: interpreted.reason_code,
+      reason: interpreted.reason,
+      model_id: modelId(),
       checked_at: checkedAt,
       latency_ms: Date.now() - start,
       schema_fingerprint: fingerprint,
@@ -110,7 +108,7 @@ export async function probeBedrockProtocol(): Promise<ProtocolHealthReport> {
       healthy: false,
       reason_code: reason,
       reason: REASON_HINTS[reason],
-      model_id: MODEL_ID,
+      model_id: modelId(),
       checked_at: checkedAt,
       latency_ms: Date.now() - start,
       schema_fingerprint: null,

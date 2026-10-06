@@ -1,5 +1,5 @@
 import { query, rowToAction, rowToIncident } from './cockroachdb';
-import { invokeClaude, type BedrockMessage } from './bedrock';
+import { invokeModel, type BedrockMessage } from './bedrock';
 import { runDegradationLadder } from './degradation';
 import { buildDegradedScaffold, type ScaffoldableAgentType } from './scaffold';
 import { composeConfidence } from './confidence';
@@ -53,7 +53,7 @@ async function invokeWithDegradation(
   const ladder = await runDegradationLadder([
     {
       name: 'primary',
-      run: () => invokeClaude(
+      run: () => invokeModel(
         `${systemPrompt}\n\nYou MUST respond with valid JSON only. No markdown, no explanation.`,
         messages,
         maxTokens
@@ -207,7 +207,7 @@ export async function runTriageAgent(incidentId: string): Promise<{ action: Agen
       ).join('\n\n')}`
     : '\n\nNo similar past incidents found. This is a new type of incident.';
 
-  // 4. Call Claude via Bedrock
+  // 4. Call Nova via Bedrock
   const systemPrompt = `You are a senior SRE triage agent for Incident Commander. Analyze the incident and provide:
 1. Severity classification (critical/high/medium/low)
 2. Incident category/type

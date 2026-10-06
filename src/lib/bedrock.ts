@@ -3,19 +3,125 @@ import {
   InvokeModelCommand,
 } from '@aws-sdk/client-bedrock-runtime';
 
-const client = new BedrockRuntimeClient({
-  region: process.env.AWS_REGION || 'us-east-1',
-  credentials: {
-    accessKeyId: process.env.AWS_ACCESS_KEY_ID || '',
-    secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY || '',
-  },
-});
+/** US cross-region inference profile for Amazon Nova Pro. Credit-eligible on Bedrock. */
+export const DEFAULT_MODEL_ID = 'us.amazon.nova-pro-v1:0';
 
-export const MODEL_ID = process.env.BEDROCK_MODEL_ID || 'anthropic.claude-sonnet-4-20250514-v1:0';
+export const NOVA_SCHEMA_DRIFT_REASON =
+  'Response received but Nova output.message.content text is missing — schema drift.';
+
+/**
+ * Effective Bedrock model id. Anthropic ids are refused: the Cubiczan account
+ * denies Marketplace Claude, and those invokes are not credit-eligible.
+ */
+export function resolveModelId(raw: string | undefined = process.env.BEDROCK_MODEL_ID): string {
+  const configured = raw?.trim();
+  if (!configured) return DEFAULT_MODEL_ID;
+  if (configured.toLowerCase().includes('anthropic')) {
+    console.warn(
+      `Refusing Anthropic Bedrock model id "${configured}"; using ${DEFAULT_MODEL_ID}. ` +
+        'Anthropic models are denied by account policy and are not credit-eligible.'
+    );
+    return DEFAULT_MODEL_ID;
+  }
+  return configured;
+}
+
+/** Resolved per call so a host env override is honored after process start. */
+export function modelId(): string {
+  return resolveModelId();
+}
+
+export function staticAwsKeysConfigured(): boolean {
+  return Boolean(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY);
+}
+
+/** Opt in to the SDK default chain (IAM role, instance profile, web identity). */
+export function iamRoleCredentialsEnabled(): boolean {
+  const flag = (process.env.AWS_USE_IAM_ROLE || '').trim().toLowerCase();
+  return flag === '1' || flag === 'true' || flag === 'yes';
+}
+
+export function awsCredentialsConfigured(): boolean {
+  return staticAwsKeysConfigured() || iamRoleCredentialsEnabled();
+}
+
+export function awsClientOptions(): {
+  region: string;
+  credentials?: { accessKeyId: string; secretAccessKey: string };
+} {
+  const region = process.env.AWS_REGION || 'us-east-1';
+  const accessKeyId = process.env.AWS_ACCESS_KEY_ID;
+  const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
+  if (accessKeyId && secretAccessKey) {
+    return { region, credentials: { accessKeyId, secretAccessKey } };
+  }
+  return { region };
+}
+
+const client = new BedrockRuntimeClient(awsClientOptions());
 
 export interface BedrockMessage {
   role: 'user' | 'assistant';
   content: string;
+}
+
+export interface NovaInvokeBody {
+  schemaVersion: 'messages-v1';
+  messages: Array<{ role: 'user' | 'assistant'; content: Array<{ text: string }> }>;
+  system?: Array<{ text: string }>;
+  inferenceConfig: { maxTokens: number };
+}
+
+/** Nova InvokeModel body. Shared by agents and the protocol probe. */
+export function buildNovaInvokeBody(
+  systemPrompt: string | undefined,
+  messages: BedrockMessage[],
+  maxTokens: number
+): NovaInvokeBody {
+  const body: NovaInvokeBody = {
+    schemaVersion: 'messages-v1',
+    messages: messages.map(m => ({
+      role: m.role === 'assistant' ? 'assistant' : 'user',
+      content: [{ text: m.content }],
+    })),
+    inferenceConfig: { maxTokens },
+  };
+  if (systemPrompt) {
+    body.system = [{ text: systemPrompt }];
+  }
+  return body;
+}
+
+/** Assistant text from a Nova InvokeModel response, or null when the shape drifted. */
+export function readNovaText(responseBody: unknown): string | null {
+  if (!responseBody || typeof responseBody !== 'object') return null;
+  const content = (responseBody as {
+    output?: { message?: { content?: unknown } };
+  }).output?.message?.content;
+  if (!Array.isArray(content)) return null;
+  const parts: string[] = [];
+  for (const block of content) {
+    if (block && typeof block === 'object' && typeof (block as { text?: unknown }).text === 'string') {
+      const text = (block as { text: string }).text;
+      if (text.length > 0) parts.push(text);
+    }
+  }
+  return parts.length > 0 ? parts.join('') : null;
+}
+
+export function interpretNovaProbeBody(responseBody: unknown): {
+  healthy: boolean;
+  reason_code: BedrockFailureReason | null;
+  reason: string | null;
+} {
+  if (readNovaText(responseBody) !== null) {
+    return { healthy: true, reason_code: null, reason: null };
+  }
+  return {
+    healthy: false,
+    reason_code: 'UNKNOWN',
+    reason: NOVA_SCHEMA_DRIFT_REASON,
+  };
 }
 
 /**
@@ -41,7 +147,7 @@ export class BedrockUnavailableError extends Error {
 }
 
 export function classifyBedrockError(e: unknown): BedrockFailureReason {
-  if (!process.env.AWS_ACCESS_KEY_ID && !process.env.AWS_SECRET_ACCESS_KEY) {
+  if (!awsCredentialsConfigured()) {
     return 'CREDENTIALS_MISSING';
   }
   const name = (e as { name?: string }).name || '';
@@ -61,32 +167,26 @@ export function classifyBedrockError(e: unknown): BedrockFailureReason {
   return 'UNKNOWN';
 }
 
-export async function invokeClaude(
+export async function invokeModel(
   systemPrompt: string,
   messages: BedrockMessage[],
   maxTokens: number = 2000
 ): Promise<string> {
   try {
-    const claudeRequest = {
-      anthropic_version: 'bedrock-2023-05-31',
-      max_tokens: maxTokens,
-      system: systemPrompt,
-      messages: messages.map(m => ({
-        role: m.role === 'assistant' ? 'assistant' : 'user',
-        content: m.content,
-      })),
-    };
-
     const command = new InvokeModelCommand({
-      modelId: MODEL_ID,
+      modelId: modelId(),
       contentType: 'application/json',
       accept: 'application/json',
-      body: JSON.stringify(claudeRequest),
+      body: JSON.stringify(buildNovaInvokeBody(systemPrompt, messages, maxTokens)),
     });
 
     const response = await client.send(command);
     const responseBody = JSON.parse(new TextDecoder().decode(response.body));
-    return responseBody.content[0].text;
+    const text = readNovaText(responseBody);
+    if (text === null) {
+      throw new Error(NOVA_SCHEMA_DRIFT_REASON);
+    }
+    return text;
   } catch (bedrockError) {
     // Row 18: the previous behavior on this path fabricated a canned incident
     // response. Fail loudly instead; callers decide whether to degrade.
@@ -97,14 +197,19 @@ export async function invokeClaude(
   }
 }
 
-export async function invokeClaudeJSON<T>(
+/** @deprecated Use invokeModel. Alias kept so existing imports keep compiling. */
+export const invokeClaude = invokeModel;
+
+export async function invokeModelJSON<T>(
   systemPrompt: string,
   messages: BedrockMessage[],
   maxTokens: number = 2000
 ): Promise<T> {
-  const text = await invokeClaude(systemPrompt + '\n\nYou MUST respond with valid JSON only. No markdown, no explanation.', messages, maxTokens);
-  // Try to extract JSON from the response
+  const text = await invokeModel(systemPrompt + '\n\nYou MUST respond with valid JSON only. No markdown, no explanation.', messages, maxTokens);
   const jsonMatch = text.match(/\{[\s\S]*\}/);
   if (!jsonMatch) throw new Error('No JSON found in LLM response');
   return JSON.parse(jsonMatch[0]) as T;
 }
+
+/** @deprecated Use invokeModelJSON. */
+export const invokeClaudeJSON = invokeModelJSON;
