@@ -1,33 +1,24 @@
 import pg from 'pg';
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
-import { confinePath } from './safe-path';
 import type { Incident, AgentAction, Runbook } from './types';
 
 const { Pool } = pg;
 
 let pool: pg.Pool | null = null;
 
+export const DATABASE_URL_MISSING =
+  'DATABASE_URL is not set. Set it in the Vercel project environment. Do not commit a .env file.';
+
+/** Connection string for the incident store. Blank values count as unset. */
+export function requireDatabaseUrl(raw: string | undefined = process.env.DATABASE_URL): string {
+  const url = raw?.trim();
+  if (!url) throw new Error(DATABASE_URL_MISSING);
+  return url;
+}
+
 export function getPool(): pg.Pool {
   if (!pool) {
-    const rawCertPath = process.env.SSL_CERT_PATH || '/home/z/.postgresql/root.crt';
-    const certPath = confinePath(rawCertPath, [
-      process.cwd(),
-      '/home/z/.postgresql',
-      path.join(os.homedir(), '.postgresql'),
-    ]);
-    const sslConfig = fs.existsSync(certPath)
-      ? { ca: fs.readFileSync(certPath).toString(), rejectUnauthorized: true }
-      : { rejectUnauthorized: false };
-
     pool = new Pool({
-      host: 'chosen-hare-28459.j77.aws-us-east-1.cockroachlabs.cloud',
-      port: 26257,
-      database: 'defaultdb',
-      user: 'impactquadrant',
-      password: process.env.DB_PASSWORD || '',
-      ssl: sslConfig,
+      connectionString: requireDatabaseUrl(),
       max: 10,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 15000,

@@ -7,13 +7,18 @@ import {
 } from '@aws-sdk/client-s3';
 import { awsClientOptions } from './bedrock';
 
-const client = new S3Client(awsClientOptions());
+let client: S3Client | undefined;
+
+function s3Client(): S3Client {
+  if (!client) client = new S3Client(awsClientOptions());
+  return client;
+}
 
 const BUCKET = process.env.S3_BUCKET || 'incident-commander-artifacts';
 
 export async function ensureBucket() {
   try {
-    await client.send(new CreateBucketCommand({ Bucket: BUCKET }));
+    await s3Client().send(new CreateBucketCommand({ Bucket: BUCKET }));
   } catch (e: unknown) {
     const err = e as { name?: string };
     if (err.name !== 'BucketAlreadyOwnedByYou' && err.name !== 'BucketAlreadyExists') {
@@ -24,7 +29,7 @@ export async function ensureBucket() {
 
 export async function uploadArtifact(key: string, content: string, contentType: string = 'application/json') {
   await ensureBucket();
-  await client.send(new PutObjectCommand({
+  await s3Client().send(new PutObjectCommand({
     Bucket: BUCKET,
     Key: key,
     Body: content,
@@ -35,7 +40,7 @@ export async function uploadArtifact(key: string, content: string, contentType: 
 
 export async function getArtifact(key: string): Promise<string | null> {
   try {
-    const result = await client.send(new GetObjectCommand({ Bucket: BUCKET, Key: key }));
+    const result = await s3Client().send(new GetObjectCommand({ Bucket: BUCKET, Key: key }));
     return (await result.Body?.transformToString()) || null;
   } catch {
     return null;
@@ -44,7 +49,7 @@ export async function getArtifact(key: string): Promise<string | null> {
 
 export async function listArtifacts(prefix: string) {
   try {
-    const result = await client.send(new ListObjectsV2Command({ Bucket: BUCKET, Prefix: prefix }));
+    const result = await s3Client().send(new ListObjectsV2Command({ Bucket: BUCKET, Prefix: prefix }));
     return (result.Contents || []).map(obj => ({
       key: obj.Key!,
       size: obj.Size!,

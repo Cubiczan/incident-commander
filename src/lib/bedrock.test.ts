@@ -1,6 +1,9 @@
 import { describe, it, expect, afterEach } from 'bun:test';
 import {
   DEFAULT_MODEL_ID,
+  awsClientOptions,
+  awsCredentialSource,
+  awsCredentialsConfigured,
   buildNovaInvokeBody,
   classifyBedrockError,
   interpretNovaProbeBody,
@@ -96,17 +99,93 @@ describe('classifyBedrockError with IAM role credentials', () => {
   const savedId = process.env.AWS_ACCESS_KEY_ID;
   const savedKey = process.env.AWS_SECRET_ACCESS_KEY;
   const savedRole = process.env.AWS_USE_IAM_ROLE;
+  const savedArn = process.env.AWS_ROLE_ARN;
 
   afterEach(() => {
     if (savedId === undefined) delete process.env.AWS_ACCESS_KEY_ID; else process.env.AWS_ACCESS_KEY_ID = savedId;
     if (savedKey === undefined) delete process.env.AWS_SECRET_ACCESS_KEY; else process.env.AWS_SECRET_ACCESS_KEY = savedKey;
     if (savedRole === undefined) delete process.env.AWS_USE_IAM_ROLE; else process.env.AWS_USE_IAM_ROLE = savedRole;
+    if (savedArn === undefined) delete process.env.AWS_ROLE_ARN; else process.env.AWS_ROLE_ARN = savedArn;
   });
 
   it('classifies access denied from the error when the IAM role flag is set', () => {
     delete process.env.AWS_ACCESS_KEY_ID;
     delete process.env.AWS_SECRET_ACCESS_KEY;
+    delete process.env.AWS_ROLE_ARN;
     process.env.AWS_USE_IAM_ROLE = '1';
     expect(classifyBedrockError({ name: 'AccessDeniedException', message: 'User is not authorized' })).toBe('AUTH_DENIED');
+  });
+});
+
+describe('aws credential selection', () => {
+  const savedId = process.env.AWS_ACCESS_KEY_ID;
+  const savedKey = process.env.AWS_SECRET_ACCESS_KEY;
+  const savedRole = process.env.AWS_USE_IAM_ROLE;
+  const savedArn = process.env.AWS_ROLE_ARN;
+  const savedRegion = process.env.AWS_REGION;
+  const savedOidc = process.env.VERCEL_OIDC_TOKEN;
+
+  afterEach(() => {
+    if (savedId === undefined) delete process.env.AWS_ACCESS_KEY_ID; else process.env.AWS_ACCESS_KEY_ID = savedId;
+    if (savedKey === undefined) delete process.env.AWS_SECRET_ACCESS_KEY; else process.env.AWS_SECRET_ACCESS_KEY = savedKey;
+    if (savedRole === undefined) delete process.env.AWS_USE_IAM_ROLE; else process.env.AWS_USE_IAM_ROLE = savedRole;
+    if (savedArn === undefined) delete process.env.AWS_ROLE_ARN; else process.env.AWS_ROLE_ARN = savedArn;
+    if (savedRegion === undefined) delete process.env.AWS_REGION; else process.env.AWS_REGION = savedRegion;
+    if (savedOidc === undefined) delete process.env.VERCEL_OIDC_TOKEN; else process.env.VERCEL_OIDC_TOKEN = savedOidc;
+  });
+
+  function clearAwsEnv() {
+    delete process.env.AWS_ACCESS_KEY_ID;
+    delete process.env.AWS_SECRET_ACCESS_KEY;
+    delete process.env.AWS_USE_IAM_ROLE;
+    delete process.env.AWS_ROLE_ARN;
+    delete process.env.VERCEL_OIDC_TOKEN;
+    process.env.AWS_REGION = 'us-east-1';
+  }
+
+  it('uses the Vercel OIDC provider when AWS_ROLE_ARN is set', async () => {
+    clearAwsEnv();
+    process.env.AWS_ROLE_ARN = 'arn:aws:iam::123456789012:role/vercel-incident-commander-nova';
+    expect(awsCredentialSource()).toBe('vercel-oidc');
+    expect(awsCredentialsConfigured()).toBe(true);
+    const { credentials } = awsClientOptions();
+    expect(typeof credentials).toBe('function');
+    if (typeof credentials !== 'function') throw new Error('expected OIDC provider');
+    await expect(credentials()).rejects.toMatchObject({ name: 'VercelOidcTokenError' });
+  });
+
+  it('prefers AWS_ROLE_ARN over static keys', () => {
+    clearAwsEnv();
+    process.env.AWS_ROLE_ARN = 'arn:aws:iam::123456789012:role/vercel-incident-commander-nova';
+    process.env.AWS_ACCESS_KEY_ID = 'AKIA_TEST';
+    process.env.AWS_SECRET_ACCESS_KEY = 'secret';
+    expect(awsCredentialSource()).toBe('vercel-oidc');
+    expect(typeof awsClientOptions().credentials).toBe('function');
+  });
+
+  it('uses static keys when no role ARN is set', () => {
+    clearAwsEnv();
+    process.env.AWS_ACCESS_KEY_ID = 'AKIA_TEST';
+    process.env.AWS_SECRET_ACCESS_KEY = 'secret';
+    expect(awsCredentialSource()).toBe('static-keys');
+    expect(awsClientOptions().credentials).toEqual({
+      accessKeyId: 'AKIA_TEST',
+      secretAccessKey: 'secret',
+    });
+  });
+
+  it('omits credentials for the SDK default chain when only the IAM flag is set', () => {
+    clearAwsEnv();
+    process.env.AWS_USE_IAM_ROLE = '1';
+    expect(awsCredentialSource()).toBe('default-chain');
+    expect(awsCredentialsConfigured()).toBe(true);
+    expect(awsClientOptions()).toEqual({ region: 'us-east-1' });
+  });
+
+  it('reports no credentials when role, keys, and the IAM flag are unset', () => {
+    clearAwsEnv();
+    expect(awsCredentialSource()).toBe('none');
+    expect(awsCredentialsConfigured()).toBe(false);
+    expect(awsClientOptions()).toEqual({ region: 'us-east-1' });
   });
 });
