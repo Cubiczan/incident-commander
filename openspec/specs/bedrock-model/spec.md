@@ -49,18 +49,23 @@ Agent and protocol-probe InvokeModel bodies SHALL use schema version `messages-v
 - **WHEN** the protocol probe receives a response without Nova `output.message.content` text
 - **THEN** the report is unhealthy with reason code `UNKNOWN`
 
-### Requirement: Credentials come from the host or an IAM role
-The repository MUST NOT contain long-lived AWS access keys. When both `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are set, clients SHALL use those values. When they are unset and `AWS_USE_IAM_ROLE` is `1`, `true`, or `yes`, clients SHALL use the AWS SDK default credential chain. When neither static keys nor that flag are set, the protocol probe SHALL report `CREDENTIALS_MISSING` without calling Bedrock.
+### Requirement: Credentials come from Vercel OIDC, static keys, or the SDK default chain
+The repository MUST NOT contain long-lived AWS access keys or a committed `.env`. When `AWS_ROLE_ARN` is set, Bedrock and S3 clients SHALL obtain credentials with the Vercel OIDC provider `awsCredentialsProvider({ roleArn })`, which calls STS AssumeRoleWithWebIdentity using the Vercel OIDC token. That path MUST NOT depend on `AWS_WEB_IDENTITY_TOKEN_FILE` or the SDK default credential chain. `AWS_ROLE_ARN` SHALL take precedence over static keys. When `AWS_ROLE_ARN` is unset and both `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` are set, clients SHALL use those values. When `AWS_ROLE_ARN` and the static keys are unset and `AWS_USE_IAM_ROLE` is `1`, `true`, or `yes`, clients SHALL omit credentials so the SDK default chain applies. When none of those are set, the protocol probe SHALL report `CREDENTIALS_MISSING` without calling Bedrock.
+
+#### Scenario: Vercel OIDC role
+- **WHEN** `AWS_ROLE_ARN` is set
+- **THEN** Bedrock and S3 client credentials are the Vercel OIDC provider for that role ARN
+- **THEN** the client does not use the SDK default credential chain
 
 #### Scenario: Static keys in the environment
-- **WHEN** both access key environment variables are set
+- **WHEN** `AWS_ROLE_ARN` is unset and both access key environment variables are set
 - **THEN** Bedrock and S3 clients use those credentials
 
 #### Scenario: IAM role flag
-- **WHEN** static key variables are unset and `AWS_USE_IAM_ROLE` is `1`
+- **WHEN** `AWS_ROLE_ARN` is unset, static key variables are unset, and `AWS_USE_IAM_ROLE` is `1`
 - **THEN** clients omit static credentials so the SDK default chain applies
 - **THEN** a Bedrock error is classified from the error itself rather than as missing credentials
 
 #### Scenario: No credentials configured
-- **WHEN** static key variables are unset and `AWS_USE_IAM_ROLE` is unset
+- **WHEN** `AWS_ROLE_ARN`, the static key variables, and `AWS_USE_IAM_ROLE` are unset
 - **THEN** the protocol probe returns `CREDENTIALS_MISSING` with latency `0` and does not call Bedrock

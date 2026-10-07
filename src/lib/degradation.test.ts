@@ -136,13 +136,18 @@ describe('composeConfidence', () => {
 describe('classifyBedrockError', () => {
   const savedId = process.env.AWS_ACCESS_KEY_ID;
   const savedKey = process.env.AWS_SECRET_ACCESS_KEY;
+  const savedRole = process.env.AWS_USE_IAM_ROLE;
+  const savedArn = process.env.AWS_ROLE_ARN;
 
   afterEach(() => {
     if (savedId === undefined) delete process.env.AWS_ACCESS_KEY_ID; else process.env.AWS_ACCESS_KEY_ID = savedId;
     if (savedKey === undefined) delete process.env.AWS_SECRET_ACCESS_KEY; else process.env.AWS_SECRET_ACCESS_KEY = savedKey;
+    if (savedRole === undefined) delete process.env.AWS_USE_IAM_ROLE; else process.env.AWS_USE_IAM_ROLE = savedRole;
+    if (savedArn === undefined) delete process.env.AWS_ROLE_ARN; else process.env.AWS_ROLE_ARN = savedArn;
   });
 
   it('maps known failure shapes to reason codes', () => {
+    delete process.env.AWS_ROLE_ARN;
     process.env.AWS_ACCESS_KEY_ID = 'x';
     process.env.AWS_SECRET_ACCESS_KEY = 'y';
     expect(classifyBedrockError({ name: 'AccessDeniedException', message: 'User is not authorized' })).toBe('AUTH_DENIED');
@@ -155,6 +160,8 @@ describe('classifyBedrockError', () => {
   it('reports missing credentials before inspecting the error', () => {
     delete process.env.AWS_ACCESS_KEY_ID;
     delete process.env.AWS_SECRET_ACCESS_KEY;
+    delete process.env.AWS_USE_IAM_ROLE;
+    delete process.env.AWS_ROLE_ARN;
     expect(classifyBedrockError({ name: 'AccessDeniedException', message: 'anything' })).toBe('CREDENTIALS_MISSING');
   });
 });
@@ -162,15 +169,21 @@ describe('classifyBedrockError', () => {
 describe('probeBedrockProtocol', () => {
   const savedId = process.env.AWS_ACCESS_KEY_ID;
   const savedKey = process.env.AWS_SECRET_ACCESS_KEY;
+  const savedRole = process.env.AWS_USE_IAM_ROLE;
+  const savedArn = process.env.AWS_ROLE_ARN;
 
   afterEach(() => {
     if (savedId === undefined) delete process.env.AWS_ACCESS_KEY_ID; else process.env.AWS_ACCESS_KEY_ID = savedId;
     if (savedKey === undefined) delete process.env.AWS_SECRET_ACCESS_KEY; else process.env.AWS_SECRET_ACCESS_KEY = savedKey;
+    if (savedRole === undefined) delete process.env.AWS_USE_IAM_ROLE; else process.env.AWS_USE_IAM_ROLE = savedRole;
+    if (savedArn === undefined) delete process.env.AWS_ROLE_ARN; else process.env.AWS_ROLE_ARN = savedArn;
   });
 
   it('fails fast with CREDENTIALS_MISSING and zero latency when no keys are configured', async () => {
     delete process.env.AWS_ACCESS_KEY_ID;
     delete process.env.AWS_SECRET_ACCESS_KEY;
+    delete process.env.AWS_USE_IAM_ROLE;
+    delete process.env.AWS_ROLE_ARN;
     const report = await probeBedrockProtocol();
     expect(report.healthy).toBe(false);
     expect(report.reason_code).toBe('CREDENTIALS_MISSING');

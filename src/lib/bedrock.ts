@@ -2,6 +2,7 @@ import {
   BedrockRuntimeClient,
   InvokeModelCommand,
 } from '@aws-sdk/client-bedrock-runtime';
+import { awsCredentialsProvider } from '@vercel/oidc-aws-credentials-provider';
 
 /** US cross-region inference profile for Amazon Nova Pro. Credit-eligible on Bedrock. */
 export const DEFAULT_MODEL_ID = 'us.amazon.nova-pro-v1:0';
@@ -35,30 +36,71 @@ export function staticAwsKeysConfigured(): boolean {
   return Boolean(process.env.AWS_ACCESS_KEY_ID && process.env.AWS_SECRET_ACCESS_KEY);
 }
 
-/** Opt in to the SDK default chain (IAM role, instance profile, web identity). */
+/** Opt in to the SDK default chain (task role, instance profile, web identity file). */
 export function iamRoleCredentialsEnabled(): boolean {
   const flag = (process.env.AWS_USE_IAM_ROLE || '').trim().toLowerCase();
   return flag === '1' || flag === 'true' || flag === 'yes';
 }
 
+/**
+ * IAM role assumed with the Vercel OIDC token. Vercel sets `VERCEL_OIDC_TOKEN`
+ * and does not set `AWS_WEB_IDENTITY_TOKEN_FILE`, so the SDK default chain
+ * cannot assume this role.
+ */
+export function vercelRoleArn(): string | undefined {
+  const arn = process.env.AWS_ROLE_ARN?.trim();
+  return arn || undefined;
+}
+
+export type AwsCredentialSource = 'vercel-oidc' | 'static-keys' | 'default-chain' | 'none';
+
+/** How Bedrock and S3 pick credentials. `AWS_ROLE_ARN` wins over static keys. */
+export function awsCredentialSource(): AwsCredentialSource {
+  if (vercelRoleArn()) return 'vercel-oidc';
+  if (staticAwsKeysConfigured()) return 'static-keys';
+  if (iamRoleCredentialsEnabled()) return 'default-chain';
+  return 'none';
+}
+
 export function awsCredentialsConfigured(): boolean {
-  return staticAwsKeysConfigured() || iamRoleCredentialsEnabled();
+  return awsCredentialSource() !== 'none';
 }
 
 export function awsClientOptions(): {
   region: string;
-  credentials?: { accessKeyId: string; secretAccessKey: string };
+  credentials?:
+    | { accessKeyId: string; secretAccessKey: string }
+    | ReturnType<typeof awsCredentialsProvider>;
 } {
   const region = process.env.AWS_REGION || 'us-east-1';
-  const accessKeyId = process.env.AWS_ACCESS_KEY_ID;
-  const secretAccessKey = process.env.AWS_SECRET_ACCESS_KEY;
-  if (accessKeyId && secretAccessKey) {
-    return { region, credentials: { accessKeyId, secretAccessKey } };
+  const source = awsCredentialSource();
+  if (source === 'vercel-oidc') {
+    return {
+      region,
+      credentials: awsCredentialsProvider({
+        roleArn: vercelRoleArn()!,
+        clientConfig: { region },
+      }),
+    };
+  }
+  if (source === 'static-keys') {
+    return {
+      region,
+      credentials: {
+        accessKeyId: process.env.AWS_ACCESS_KEY_ID!,
+        secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY!,
+      },
+    };
   }
   return { region };
 }
 
-const client = new BedrockRuntimeClient(awsClientOptions());
+let client: BedrockRuntimeClient | undefined;
+
+function bedrockClient(): BedrockRuntimeClient {
+  if (!client) client = new BedrockRuntimeClient(awsClientOptions());
+  return client;
+}
 
 export interface BedrockMessage {
   role: 'user' | 'assistant';
@@ -180,7 +222,7 @@ export async function invokeModel(
       body: JSON.stringify(buildNovaInvokeBody(systemPrompt, messages, maxTokens)),
     });
 
-    const response = await client.send(command);
+    const response = await bedrockClient().send(command);
     const responseBody = JSON.parse(new TextDecoder().decode(response.body));
     const text = readNovaText(responseBody);
     if (text === null) {

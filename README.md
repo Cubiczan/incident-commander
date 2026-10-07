@@ -180,7 +180,7 @@ const { intact, tamperedIndex } = AuditLedger.verify(path, key);
 // -> { intact: false, tamperedIndex: 2 }    first bad line index
 ```
 
-**Tests.** `bun run test` (or `bun test src/lib`) runs
+**Tests.** `bun run test` (or `bun test --isolate src/lib`) runs
 `src/lib/audit/ledger.test.ts`, which appends N records and asserts the chain is
 intact, then tampers with / deletes a line and asserts `verify` reports the
 correct `tamperedIndex`.
@@ -211,11 +211,13 @@ cp .env.example .env.local
 # Edit .env.local. Do not commit real keys (.env.local is gitignored).
 ```
 
-AWS credentials come from the host, not from the repository:
+AWS credentials and the database URL come from the host, not from the repository. `.env` is gitignored. Copy `.env.example` to `.env.local` for local development.
 
-- **Env keys:** set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_REGION=us-east-1` in `.env.local` or the hosting environment (for example Vercel project env). Use an IAM user that can invoke Nova only.
-- **IAM role:** leave the key variables unset and set `AWS_USE_IAM_ROLE=1`. The AWS SDK then uses the default credential chain (task role, instance profile, or web identity).
+- **Vercel OIDC:** set `AWS_ROLE_ARN` to the IAM role that trusts the project's Vercel OIDC issuer, and set `AWS_REGION=us-east-1`. Bedrock and S3 call `awsCredentialsProvider({ roleArn })`, which exchanges the Vercel OIDC token with STS. Vercel does not set `AWS_WEB_IDENTITY_TOKEN_FILE`, so the SDK default chain cannot assume this role.
+- **Env keys:** used only when `AWS_ROLE_ARN` is unset. Set `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` for an IAM user that can invoke Nova.
+- **Other IAM roles:** when `AWS_ROLE_ARN` and the static keys are unset, set `AWS_USE_IAM_ROLE=1` to use the SDK default chain (task role, instance profile, or a web-identity token file).
 - **Model:** `BEDROCK_MODEL_ID` defaults to `us.amazon.nova-pro-v1:0`. Any value containing `anthropic` is refused and replaced with that default. Unset a stale Claude id on the host so the configured value matches what runs.
+- **Database:** incident API routes open `DATABASE_URL`. Set that connection string in the Vercel project environment. A missing value fails the request instead of dialing a host baked into the repo.
 
 4. **Set up CockroachDB**
 ```sql

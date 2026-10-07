@@ -25,7 +25,13 @@ import {
 
 // The probe owns its own client (same env config as the invocation path) so
 // it stays independently constructible in tests and health endpoints.
-const client = new BedrockRuntimeClient(awsClientOptions());
+// Built on first use so AWS_ROLE_ARN is read at request time, not at import.
+let client: BedrockRuntimeClient | undefined;
+
+function probeClient(): BedrockRuntimeClient {
+  if (!client) client = new BedrockRuntimeClient(awsClientOptions());
+  return client;
+}
 
 export interface ProtocolHealthReport {
   protocol: 'bedrock-invoke';
@@ -46,7 +52,7 @@ export interface ProtocolHealthReport {
 }
 
 const REASON_HINTS: Record<BedrockFailureReason, string> = {
-  CREDENTIALS_MISSING: 'AWS credentials are not configured. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in the host environment, or set AWS_USE_IAM_ROLE=1 to use an IAM role.',
+  CREDENTIALS_MISSING: 'AWS credentials are not configured. Set AWS_ROLE_ARN for Vercel OIDC, or AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, or AWS_USE_IAM_ROLE=1.',
   AUTH_DENIED: 'AWS denied the call — check IAM permissions for bedrock:InvokeModel.',
   THROTTLED: 'Bedrock throttled the request — the account or model quota is exhausted.',
   MODEL_NOT_FOUND: 'The configured BEDROCK_MODEL_ID is not available in this region/account.',
@@ -81,7 +87,7 @@ export async function probeBedrockProtocol(): Promise<ProtocolHealthReport> {
       // protocol path (auth, model, response shape) end to end.
       body: JSON.stringify(buildNovaInvokeBody(undefined, [{ role: 'user', content: 'ping' }], 1)),
     });
-    const response = await client.send(command);
+    const response = await probeClient().send(command);
     const responseBody = JSON.parse(new TextDecoder().decode(response.body)) as Record<string, unknown>;
     const fingerprint = createHash('sha256')
       .update(JSON.stringify(Object.keys(responseBody).sort()))
