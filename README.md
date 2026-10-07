@@ -24,7 +24,7 @@ Incident Commander is a multi-agent AI system that autonomously triages, investi
      ▼             ▼             ▼
 ┌─────────┐  ┌──────────┐  ┌────────┐
 │ Bedrock │  │CockroachDB│  │  S3   │
-│ (Claude)│  │           │  │(artifacts)│
+│(Nova Pro)│  │           │  │(artifacts)│
 │ 4 Agents│  │ ┌───────┐ │  │        │
 │         │  │ │incidents│ │  │        │
 │ Triage  │  │ │actions  │ │  │        │
@@ -39,7 +39,7 @@ Incident Commander is a multi-agent AI system that autonomously triages, investi
 
 - **4-Agent Pipeline**: Triage → Investigate → Resolve → Post-Mortem
 - **RAG-Powered Memory**: Vector similarity search across past incidents and runbooks
-- **AWS Bedrock Integration**: Claude Sonnet 4 powers all agent reasoning
+- **AWS Bedrock Integration**: Amazon Nova Pro powers all agent reasoning
 - **S3 Artifact Storage**: Post-mortem reports and agent outputs stored in S3
 - **UiPath Intake**: Inbox and attachment handoffs can land incident payloads directly into the incident table
 - **Real-Time Dashboard**: Dark "mission control" UI with severity tracking
@@ -63,7 +63,7 @@ Every agent **response action** (scaling, rollback, failover, restarts, cache cl
 | Backend | Next.js API Routes |
 | Database | CockroachDB Cloud with pgvector |
 | Vector Index | CockroachDB Distributed Vector Index (VECTOR(1536)) |
-| LLM | AWS Bedrock (Claude Sonnet 4) |
+| LLM | AWS Bedrock (Amazon Nova Pro) |
 | Storage | AWS S3 |
 
 ## CockroachDB Tools Used
@@ -76,8 +76,8 @@ All incident state, agent actions, runbooks, and session data is stored in Cockr
 
 ## AWS Services Used
 
-### 1. Amazon Bedrock (Claude Sonnet 4)
-All four agents use Claude via Bedrock for reasoning:
+### 1. Amazon Bedrock (Amazon Nova Pro)
+All four agents use Amazon Nova Pro via Bedrock for reasoning (`us.amazon.nova-pro-v1:0` in `us-east-1`). Anthropic model ids are refused. Set `BEDROCK_MODEL_ID=us.amazon.nova-lite-v1:0` for the smaller Nova Lite model.
 - **Triage Agent**: Classifies severity, identifies similar past incidents
 - **Investigation Agent**: Searches runbooks via RAG, determines root cause
 - **Resolution Agent**: Executes remediation plan
@@ -190,7 +190,7 @@ correct `tamperedIndex`.
 ### Prerequisites
 - Node.js 18+ / Bun
 - CockroachDB Cloud account (free tier)
-- AWS account with Bedrock and S3 access
+- AWS account with Bedrock (Amazon Nova) and S3 access. The IAM principal needs `bedrock:InvokeModel` on the Nova inference profile. Do not use Anthropic / Claude model ids — this account denies Marketplace Claude.
 
 ### Setup
 
@@ -208,8 +208,14 @@ bun install
 3. **Configure environment**
 ```bash
 cp .env.example .env.local
-# Edit .env.local with your CockroachDB and AWS credentials
+# Edit .env.local. Do not commit real keys (.env.local is gitignored).
 ```
+
+AWS credentials come from the host, not from the repository:
+
+- **Env keys:** set `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_REGION=us-east-1` in `.env.local` or the hosting environment (for example Vercel project env). Use an IAM user that can invoke Nova only.
+- **IAM role:** leave the key variables unset and set `AWS_USE_IAM_ROLE=1`. The AWS SDK then uses the default credential chain (task role, instance profile, or web identity).
+- **Model:** `BEDROCK_MODEL_ID` defaults to `us.amazon.nova-pro-v1:0`. Any value containing `anthropic` is refused and replaced with that default. Unset a stale Claude id on the host so the configured value matches what runs.
 
 4. **Set up CockroachDB**
 ```sql
@@ -244,19 +250,19 @@ curl -X POST http://localhost:3000/api/seed
 ### Agent Pipeline Flow
 
 1. **Incident Created** → Stored in CockroachDB with vector embedding
-2. **Triage Agent** (Bedrock Claude):
+2. **Triage Agent** (Bedrock Nova Pro):
    - Embeds incident description
    - Vector search finds similar past incidents
    - Classifies severity and recommends actions
    - Stores results in CockroachDB + S3
-3. **Investigation Agent** (Bedrock Claude):
+3. **Investigation Agent** (Bedrock Nova Pro):
    - Retrieves relevant runbooks via RAG
    - Cross-references similar incident resolutions
    - Determines root cause hypothesis
-4. **Resolution Agent** (Bedrock Claude):
+4. **Resolution Agent** (Bedrock Nova Pro):
    - Executes remediation based on investigation
    - Stores resolution as new embedding (system learns!)
-5. **Post-Mortem Agent** (Bedrock Claude):
+5. **Post-Mortem Agent** (Bedrock Nova Pro):
    - Reviews entire agent history
    - Generates comprehensive report
    - Uploads to S3
@@ -272,7 +278,7 @@ src/
 ├── lib/
 │   ├── types.ts          # TypeScript interfaces
 │   ├── cockroachdb.ts    # Database connection & helpers
-│   ├── bedrock.ts        # AWS Bedrock Claude integration
+│   ├── bedrock.ts        # AWS Bedrock Nova integration
 │   ├── s3.ts             # AWS S3 artifact storage
 │   └── agents.ts         # 4 agent implementations + RAG
 ├── app/
@@ -298,7 +304,7 @@ src/
 - [x] Public GitHub repository
 - [x] Uses CockroachDB Distributed Vector Indexing
 - [x] Uses CockroachDB Cloud as persistent memory
-- [x] Uses AWS Bedrock (Claude) for agent reasoning
+- [x] Uses AWS Bedrock (Amazon Nova Pro) for agent reasoning
 - [x] Uses AWS S3 for artifact storage
 - [x] Functional demo app
 - [x] Demo video (< 3 minutes)
