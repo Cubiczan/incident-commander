@@ -180,7 +180,7 @@ const { intact, tamperedIndex } = AuditLedger.verify(path, key);
 // -> { intact: false, tamperedIndex: 2 }    first bad line index
 ```
 
-**Tests.** `bun run test` (or `bun test src/lib`) runs
+**Tests.** `bun run test` (or `bun test --isolate src/lib`) runs
 `src/lib/audit/ledger.test.ts`, which appends N records and asserts the chain is
 intact, then tampers with / deletes a line and asserts `verify` reports the
 correct `tamperedIndex`.

@@ -2,7 +2,9 @@
 // (HIGH finding on #4: the route previously ran a live Bedrock probe per
 // unauthenticated GET and returned raw SDK exception text).
 //
-// The probe module is mocked so no test ever reaches AWS. Env-based auth is
+// The probe module is mocked so no test ever reaches AWS. mock.module is
+// process-global, so the suite runs with `bun test --isolate` (package.json)
+// and this mock cannot replace the real probe in later files. Env-based auth is
 // read per request, so tests manipulate PROTOCOL_HEALTH_TOKEN directly.
 // PROTOCOL_HEALTH_TTL_MS=0 disables the route cache for fresh-probe tests;
 // the cache test overrides it with a large TTL.
